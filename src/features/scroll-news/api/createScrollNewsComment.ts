@@ -1,15 +1,16 @@
 import type { ScrollNewsComment } from '@/entities/scroll-news/model/types';
-import { scrollNewsMockDb } from './mockDb';
-
-function sleep(ms: number) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+import { apiPostJson } from '@/shared/api/http';
+import { mapComment } from './mappers';
 
 export async function createScrollNewsComment(args: {
   postId: string;
   text: string;
 }): Promise<ScrollNewsComment> {
-  await sleep(250);
-  return await scrollNewsMockDb.createComment(args);
+  const res = await apiPostJson<{
+    ok: true;
+    data: { comment: any };
+  }>(`/posts/${encodeURIComponent(args.postId)}/comments`, { text: args.text });
+
+  return mapComment(res.data.comment);
 }
 

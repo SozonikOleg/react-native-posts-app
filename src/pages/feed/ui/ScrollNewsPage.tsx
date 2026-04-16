@@ -40,7 +40,10 @@ import {
   useCreateScrollNewsComment,
   useScrollNewsComments,
   useScrollNewsPostsInfinite,
+  useToggleScrollNewsLike,
 } from '@/features/scroll-news/queries/hooks';
+import { useQueryClient } from '@tanstack/react-query';
+import { scrollNewsKeys } from '@/features/scroll-news/queries/keys';
 import {
   FeedCardActions,
   FeedCardBody,
@@ -136,8 +139,7 @@ function ScrollNewsFeedSkeleton() {
 
 const API_UNAVAILABLE_MESSAGE = "Не удалось загрузить публикацию";
 const COMMENTS_ERROR_MESSAGE = "Не удалось загрузить комментарии";
-const WS_EVENTS_URL =
-  "wss://k8s.mectest.ru/test-app/ws?token=550e8400-e29b-41d4-a716-446655440000";
+const WS_EVENTS_URL = process.env.EXPO_PUBLIC_WS_EVENTS_URL;
 type PostsFilterTab = "all" | "free" | "paid";
 const FILTER_TABS: readonly {
   key: PostsFilterTab;
@@ -230,10 +232,13 @@ function FeedCard({
     likeFill.setValue(item.isLiked ? 1 : 0);
   }, [item, likeFill]);
 
+  const toggleLike = useToggleScrollNewsLike();
+
   const onLikePress = () => {
     const nextLiked = !liked;
+    const nextLikes = Math.max(0, likesCount + (nextLiked ? 1 : -1));
     setLiked(nextLiked);
-    setLikesCount((prev) => Math.max(0, prev + (nextLiked ? 1 : -1)));
+    setLikesCount(nextLikes);
 
     Vibration.vibrate(10);
     likePulse.value = withSequence(
@@ -253,6 +258,23 @@ function FeedCard({
       easing: Easing.inOut(Easing.ease),
       useNativeDriver: false,
     }).start();
+
+    toggleLike.mutate(
+      { postId: item.id },
+      {
+        onSuccess: (res) => {
+          setLiked(res.isLiked);
+          setLikesCount(res.likesCount);
+          likeFill.setValue(res.isLiked ? 1 : 0);
+        },
+        onError: () => {
+          // Revert to prop values (cache-driven)
+          setLiked(Boolean(item.isLiked));
+          setLikesCount(item.likesCount);
+          likeFill.setValue(item.isLiked ? 1 : 0);
+        },
+      },
+    );
   };
 
   return (
@@ -299,6 +321,7 @@ function FeedCard({
 function ScrollNewsPageImpl() {
   const { width: winWidth } = useWindowDimensions();
   const { scrollNewsUi } = useRootStore();
+  const qc = useQueryClient();
   const activeTab = scrollNewsUi.activeTab as PostsFilterTab;
   const selectedPostId = scrollNewsUi.selectedPostId;
   const openedPost = scrollNewsUi.openedPost;
@@ -375,18 +398,7 @@ function ScrollNewsPageImpl() {
     });
   }, []);
 
-  const addCommentToFeed = useCallback((postId: string, delta: number) => {
-    if (delta === 0) {
-      return;
-    }
-    setItems((prev) =>
-      prev.map((post) =>
-        post.id === postId
-          ? { ...post, commentsCount: Math.max(0, post.commentsCount + delta) }
-          : post,
-      ),
-    );
-  }, []);
+  // Comments count is updated via React Query cache (mutation + WS invalidate).
 
   const addCommentToPanel = useCallback(
     (incoming: ScrollNewsComment) => {
@@ -468,6 +480,9 @@ function ScrollNewsPageImpl() {
 
   useEffect(() => {
     let socket: WebSocket | null = null;
+    if (!WS_EVENTS_URL) {
+      return;
+    }
     try {
       socket = new WebSocket(WS_EVENTS_URL);
       socket.onopen = () => {
@@ -489,6 +504,7 @@ function ScrollNewsPageImpl() {
           const payload = JSON.parse(String(event.data)) as {
             type?: string;
             postId?: string;
+            likesCount?: number;
             comment?: ScrollNewsComment;
           };
           if (
@@ -526,6 +542,29 @@ function ScrollNewsPageImpl() {
               // cache will update on next refetch; skip manual mutation here
             }
           }
+
+          if (
+            payload.type === 'like_updated' &&
+            payload.postId &&
+            typeof payload.likesCount === 'number'
+          ) {
+            const patch = { likesCount: payload.likesCount };
+            const apply = (key: ReturnType<typeof scrollNewsKeys.posts>) => {
+              qc.setQueryData(key, (prev: any) => {
+                if (!prev?.pages) return prev;
+                const pages = prev.pages.map((p: any) => ({
+                  ...p,
+                  posts: (p.posts ?? []).map((post: ScrollNewsPost) =>
+                    post.id === payload.postId ? { ...post, ...patch } : post,
+                  ),
+                }));
+                return { ...prev, pages };
+              });
+            };
+            apply(scrollNewsKeys.posts('all'));
+            apply(scrollNewsKeys.posts('free'));
+            apply(scrollNewsKeys.posts('paid'));
+          }
         } catch {
           // Ignore malformed event payloads.
         }
@@ -539,7 +578,7 @@ function ScrollNewsPageImpl() {
         socket.close();
       }
     };
-  }, [addCommentToFeed, addCommentToPanel]);
+  }, [addCommentToPanel, qc]);
 
   const onRefresh = useCallback(async () => {
     await postsQuery.refetch();
@@ -591,7 +630,11 @@ function ScrollNewsPageImpl() {
   }
 
   const error =
-    postsQuery.isError && items.length === 0 ? API_UNAVAILABLE_MESSAGE : null;
+    postsQuery.isError && items.length === 0
+      ? postsQuery.error instanceof Error
+        ? postsQuery.error.message
+        : API_UNAVAILABLE_MESSAGE
+      : null;
 
   if (error && items.length === 0) {
     return (

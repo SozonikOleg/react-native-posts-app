@@ -1,18 +1,24 @@
 import type { ScrollNewsCommentsResponse } from '@/entities/scroll-news/model/types';
-import { scrollNewsMockDb } from './mockDb';
-
-function sleep(ms: number) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+import { apiGetJson } from '@/shared/api/http';
+import { mapComment } from './mappers';
 
 export async function fetchScrollNewsComments(args: {
   postId: string;
   cursor?: string | null;
+  limit?: number;
 }): Promise<ScrollNewsCommentsResponse> {
-  await sleep(300);
-  return await scrollNewsMockDb.fetchCommentsPage({
-    postId: args.postId,
-    cursor: args.cursor ?? null,
+  const res = await apiGetJson<{
+    ok: true;
+    data: { comments: any[]; nextCursor: string | null; hasMore: boolean };
+  }>(`/posts/${encodeURIComponent(args.postId)}/comments`, {
+    cursor: args.cursor ?? undefined,
+    limit: args.limit ?? undefined,
   });
+
+  return {
+    comments: res.data.comments.map(mapComment),
+    nextCursor: res.data.nextCursor,
+    hasMore: res.data.hasMore,
+  };
 }
 

@@ -30,6 +30,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import {
   useCreateScrollNewsComment,
   useScrollNewsCommentsInfinite,
+  useToggleScrollNewsLike,
 } from '@/features/scroll-news/queries/hooks';
 import { scrollNewsKeys } from '@/features/scroll-news/queries/keys';
 import {
@@ -45,8 +46,7 @@ import {
 import { scrollNewsTokens as t } from '@/shared/theme/scrollNewsTokens';
 
 const COMMENTS_ERROR_MESSAGE = 'Не удалось загрузить комментарии';
-const WS_EVENTS_URL =
-  'wss://k8s.mectest.ru/test-app/ws?token=550e8400-e29b-41d4-a716-446655440000';
+const WS_EVENTS_URL = process.env.EXPO_PUBLIC_WS_EVENTS_URL;
 
 type CommentUiState = {
   liked: boolean;
@@ -100,6 +100,7 @@ function ScrollNewsPostPageImpl(props: {
   );
   const [liked, setLiked] = useState(Boolean(post.isLiked));
   const [likesCount, setLikesCount] = useState(post.likesCount);
+  const toggleLike = useToggleScrollNewsLike();
   const [commentsCount, setCommentsCount] = useState(post.commentsCount);
   const commentsNewestFirst = scrollNewsUi.commentsNewestFirst;
   const commentDraft = scrollNewsUi.getCommentDraft(post.id);
@@ -148,8 +149,9 @@ function ScrollNewsPostPageImpl(props: {
 
   const onLikePress = useCallback(() => {
     const nextLiked = !liked;
+    const nextLikes = Math.max(0, likesCount + (nextLiked ? 1 : -1));
     setLiked(nextLiked);
-    setLikesCount(prev => Math.max(0, prev + (nextLiked ? 1 : -1)));
+    setLikesCount(nextLikes);
 
     // Light haptic feedback (fallback without extra deps).
     Vibration.vibrate(10);
@@ -165,7 +167,21 @@ function ScrollNewsPostPageImpl(props: {
         easing: Easing.out(Easing.quad),
       }),
     );
-  }, [likePulse, liked]);
+
+    toggleLike.mutate(
+      { postId: post.id },
+      {
+        onSuccess: (res) => {
+          setLiked(res.isLiked);
+          setLikesCount(res.likesCount);
+        },
+        onError: () => {
+          setLiked(Boolean(post.isLiked));
+          setLikesCount(post.likesCount);
+        },
+      },
+    );
+  }, [likePulse, liked, likesCount, post.id, post.isLiked, post.likesCount, toggleLike]);
 
   const ensureCommentUiState = useCallback((commentId: string) => {
     setCommentUi(prev => {
@@ -196,6 +212,9 @@ function ScrollNewsPostPageImpl(props: {
 
   useEffect(() => {
     let socket: WebSocket | null = null;
+    if (!WS_EVENTS_URL) {
+      return;
+    }
     try {
       socket = new WebSocket(WS_EVENTS_URL);
       socket.onopen = () => {
@@ -216,6 +235,7 @@ function ScrollNewsPostPageImpl(props: {
           const payload = JSON.parse(String(event.data)) as {
             type?: string;
             postId?: string;
+            likesCount?: number;
             comment?: ScrollNewsComment;
           };
           if (
@@ -247,6 +267,14 @@ function ScrollNewsPostPageImpl(props: {
             ensureCommentUiState(payload.comment.id);
             // Let React Query sync comments list.
             qc.invalidateQueries({ queryKey: scrollNewsKeys.comments(post.id) });
+          }
+
+          if (
+            payload.type === 'like_updated' &&
+            payload.postId === post.id &&
+            typeof payload.likesCount === 'number'
+          ) {
+            setLikesCount(payload.likesCount);
           }
         } catch {
           // Ignore malformed event payloads.
