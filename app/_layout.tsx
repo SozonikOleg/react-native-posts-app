@@ -4,9 +4,9 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
 
-import { useColorScheme } from '@/hooks/use-color-scheme';
-import { queryClient } from '@/lib/queryClient';
-import { RootStoreProvider } from '@/stores/rootStore';
+import { useColorScheme } from '@/shared/lib/hooks/use-color-scheme';
+import { queryClient } from '@/shared/api/queryClient';
+import { RootStoreProvider } from '@/application/providers/rootStore';
 
 export const unstable_settings = {
   anchor: '(tabs)',
